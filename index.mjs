@@ -1,10 +1,12 @@
 import http from "node:http";
 import crypto from "node:crypto";
 import WebSocket from "ws";
+import OpenAI from "openai";
 
 const {
   PORT = "3000",
   OPENAI_API_KEY = "",
+  OPENAI_WEBHOOK_SECRET = "",
   SIDECAR_SHARED_SECRET = "",
   AETHER_VOICE_TOOL_KEY = "",
   AETHER_CLIENT_ID = "",
@@ -14,6 +16,11 @@ const {
   AETHER_REALTIME_VOICE = "marin",
   LOG_LEVEL = "info",
 } = process.env;
+
+const openai = new OpenAI({
+  apiKey: OPENAI_API_KEY,
+  webhookSecret: OPENAI_WEBHOOK_SECRET || undefined,
+});
 
 const sessions = new Map();
 
@@ -33,10 +40,14 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-async function readJson(req) {
+async function readRaw(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
-  const raw = Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function readJson(req) {
+  const raw = await readRaw(req);
   return raw ? JSON.parse(raw) : {};
 }
 
@@ -162,19 +173,22 @@ function createResponse(state, extra = {}) {
 }
 
 async function handleFunctionCall(state, item) {
-  const callId = String(item?.call_id || "");
+  const toolCallId = String(item?.call_id || "");
   const name = String(item?.name || "");
-  if (!callId || !name) return;
+  if (!toolCallId || !name) return;
 
-  if (state.completedToolCalls.has(callId)) {
-    log("warn", "duplicate_tool_call_ignored", { session: state.callId, tool_call_id: callId, name });
+  if (state.completedToolCalls.has(toolCallId)) {
+    log("warn", "duplicate_tool_call_ignored", {
+      session: state.callId,
+      tool_call_id: toolCallId,
+      name
+    });
     return;
   }
 
-  state.completedToolCalls.add(callId);
+  state.completedToolCalls.add(toolCallId);
   state.toolRunning = true;
 
-  // Bridge ACK: a short spoken message before external lookup.
   send(state.ws, {
     type: "response.create",
     response: {
@@ -187,12 +201,18 @@ async function handleFunctionCall(state, item) {
   let output;
   try {
     const args = safeParseArguments(item.arguments);
-    log("info", "tool_started", { session: state.callId, name, tool_call_id: callId });
+    log("info", "tool_started", {
+      session: state.callId,
+      name,
+      tool_call_id: toolCallId
+    });
+
     output = await executeTool(name, args, state.callId);
+
     log("info", "tool_finished", {
       session: state.callId,
       name,
-      tool_call_id: callId,
+      tool_call_id: toolCallId,
       success: output?.success !== false,
     });
   } catch (error) {
@@ -202,14 +222,18 @@ async function handleFunctionCall(state, item) {
       instruction:
         "Do not claim the external action succeeded. Tell the caller the system could not verify it and offer a safe retry or human follow-up."
     };
-    log("error", "tool_failed", { session: state.callId, name, error: output.error });
+    log("error", "tool_failed", {
+      session: state.callId,
+      name,
+      error: output.error
+    });
   }
 
   send(state.ws, {
     type: "conversation.item.create",
     item: {
       type: "function_call_output",
-      call_id: callId,
+      call_id: toolCallId,
       output: JSON.stringify(output),
     },
   });
@@ -268,7 +292,6 @@ function attach(callId) {
       }
     });
 
-    // Initial greeting only. No tool work occurs here.
     createResponse(state, {
       response: {
         instructions:
@@ -293,23 +316,23 @@ function attach(callId) {
         state.responseActive = false;
         const functionCalls = findFunctionCalls(event);
         for (const item of functionCalls) {
-          // Tool execution boundary: completed model function-call items only.
           await handleFunctionCall(state, item);
         }
         break;
       }
 
       case "input_audio_buffer.speech_stopped":
-        // Turn timing only. Never execute a tool here.
         if (!state.toolRunning && !state.responseActive) createResponse(state);
         break;
 
       case "input_audio_buffer.speech_started":
-        // Realtime server handles interruption via interrupt_response=true.
         break;
 
       case "error":
-        log("error", "openai_realtime_error", { session: callId, error: event.error });
+        log("error", "openai_realtime_error", {
+          session: callId,
+          error: event.error
+        });
         break;
 
       default:
@@ -328,7 +351,10 @@ function attach(callId) {
   });
 
   ws.on("error", (error) => {
-    log("error", "sideband_error", { session: callId, error: error?.message || String(error) });
+    log("error", "sideband_error", {
+      session: callId,
+      error: error?.message || String(error)
+    });
   });
 
   return state;
@@ -343,6 +369,87 @@ function detach(callId) {
   return true;
 }
 
+async function acceptIncomingCall(callId) {
+  const response = await fetch(
+    `https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/accept`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        type: "realtime",
+        model: AETHER_REALTIME_MODEL,
+        instructions:
+          "You are Valentina, the bilingual front desk and scheduling concierge for JAD & Associates. Be concise, warm, and professional. Never claim a calendar action succeeded unless the calendar tool confirms it.",
+        audio: {
+          output: { voice: AETHER_REALTIME_VOICE }
+        }
+      }),
+      signal: AbortSignal.timeout(15000),
+    }
+  );
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`OpenAI accept failed ${response.status}: ${text.slice(0, 500)}`);
+  }
+
+  return text ? JSON.parse(text) : {};
+}
+
+async function handleOpenAIWebhook(req, res) {
+  if (!OPENAI_WEBHOOK_SECRET) {
+    log("error", "webhook_secret_missing");
+    return json(res, 503, { error: "Webhook not configured" });
+  }
+
+  const raw = await readRaw(req);
+
+  let event;
+  try {
+    event = await openai.webhooks.unwrap(raw, req.headers);
+  } catch (error) {
+    log("warn", "openai_webhook_signature_invalid", {
+      error: error?.message || String(error)
+    });
+    return json(res, 400, { error: "Invalid webhook signature" });
+  }
+
+  if (event.type !== "realtime.call.incoming") {
+    log("debug", "openai_webhook_ignored", { type: event.type });
+    return json(res, 200, { received: true });
+  }
+
+  const callId = String(event?.data?.call_id || "").trim();
+  if (!callId) {
+    return json(res, 400, { error: "Missing call_id" });
+  }
+
+  try {
+    log("info", "sip_call_incoming", { session: callId });
+
+    await acceptIncomingCall(callId);
+
+    const state = attach(callId);
+
+    log("info", "sip_call_accepted", { session: callId });
+
+    return json(res, 202, {
+      accepted: true,
+      call_id: callId,
+      state: state.connectedAt ? "attached" : "connecting"
+    });
+  } catch (error) {
+    log("error", "sip_call_accept_failed", {
+      session: callId,
+      error: error?.message || String(error)
+    });
+    return json(res, 502, { error: "Failed to accept call" });
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -354,6 +461,7 @@ const server = http.createServer(async (req, res) => {
         service: "aether-openai-realtime-sidecar",
         active_sessions: sessions.size,
         missing_config: missing,
+        sip_webhook_ready: Boolean(OPENAI_WEBHOOK_SECRET),
       });
     }
 
@@ -362,6 +470,12 @@ const server = http.createServer(async (req, res) => {
         service: "aether-openai-realtime-sidecar",
         status: "staging",
       });
+    }
+
+    // Public endpoint used only by OpenAI. Authenticity is checked with
+    // the OpenAI webhook signing secret, not SIDECAR_SHARED_SECRET.
+    if (req.method === "POST" && url.pathname === "/webhook/realtime/incoming") {
+      return handleOpenAIWebhook(req, res);
     }
 
     if (!authorized(req)) {
@@ -410,5 +524,6 @@ server.listen(Number(PORT), "0.0.0.0", () => {
   log("info", "server_started", {
     port: Number(PORT),
     missing_config: requiredConfig(),
+    sip_webhook_ready: Boolean(OPENAI_WEBHOOK_SECRET),
   });
 });

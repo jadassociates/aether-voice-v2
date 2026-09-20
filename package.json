@@ -1,6 +1,6 @@
 {
   "name": "aether-voice-v2",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -11,6 +11,7 @@
     "check": "node --check index.mjs"
   },
   "dependencies": {
+    "openai": "^7.20.0",
     "ws": "^8.18.3"
   }
 }
