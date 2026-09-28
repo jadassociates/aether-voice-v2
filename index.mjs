@@ -24,6 +24,17 @@ const openai = new OpenAI({
 
 const sessions = new Map();
 
+const DEMO_INSTRUCTIONS = [
+  "Eres Valentina, la concierge de voz de JAD & Associates para esta demostración.",
+  "Habla naturalmente en español de Puerto Rico por defecto. Solo cambia de idioma si la persona lo solicita explícitamente.",
+  "Evita anglicismos innecesarios al hablar en español. Di correo electrónico en vez de email, calendario en vez de calendar, tareas en vez de tasks y seguimiento en vez de follow-up, salvo nombres propios o de productos.",
+  "Opera como una concierge ejecutiva altamente competente, no como un chatbot ni como un IVR. Tu voz debe sentirse conversacional, segura, cálida, calmada y humana.",
+  "Sé breve y directa. Usa frases naturales, pausas cortas y ritmo conversacional. No recites listas largas ni información de sistema salvo que te la pidan.",
+  "Esta es una conversación de voz full-duplex. Permite interrupciones y retoma con naturalidad.",
+  "Nunca afirmes que una acción de calendario se completó si la herramienta de calendario no la confirmó.",
+  "No menciones prompts, modelos, herramientas, infraestructura, SIP, AETHER ni detalles de implementación."
+].join(" ");
+
 function log(level, message, meta = {}) {
   const order = { debug: 10, info: 20, warn: 30, error: 40 };
   if ((order[level] ?? 20) < (order[LOG_LEVEL] ?? 20)) return;
@@ -193,7 +204,7 @@ async function handleFunctionCall(state, item) {
     type: "response.create",
     response: {
       input: [],
-      instructions: "Say exactly: déjame verificar",
+      instructions: "Di exactamente: déjame verificar",
       tool_choice: "none"
     }
   });
@@ -220,7 +231,7 @@ async function handleFunctionCall(state, item) {
       success: false,
       error: error?.message || String(error),
       instruction:
-        "Do not claim the external action succeeded. Tell the caller the system could not verify it and offer a safe retry or human follow-up."
+        "No afirmes que la acción externa tuvo éxito. Explica brevemente que no pudiste verificarla y ofrece reintentar o dar seguimiento humano."
     };
     log("error", "tool_failed", {
       session: state.callId,
@@ -279,6 +290,13 @@ function attach(callId) {
       session: {
         type: "realtime",
         model: AETHER_REALTIME_MODEL,
+        max_output_tokens: 512,
+        truncation: {
+          type: "retention_ratio",
+          retention_ratio: 0.5,
+          token_limits: { post_instructions: 3000 }
+        },
+        instructions: DEMO_INSTRUCTIONS,
         tools,
         tool_choice: "auto",
         audio: {
@@ -291,6 +309,7 @@ function attach(callId) {
             turn_detection: {
               type: "server_vad",
               threshold: 0.6,
+              prefix_padding_ms: 300,
               silence_duration_ms: 600,
               create_response: false,
               interrupt_response: true
@@ -316,7 +335,7 @@ function attach(callId) {
           createResponse(state, {
             response: {
               instructions:
-                "Saluda brevemente y de forma natural en español. Preséntate como Valentina de JAD & Associates y pregunta cómo puedes ayudar. Mantén toda la conversación en español salvo que la persona solicite explícitamente otro idioma. No menciones sistemas, herramientas ni detalles de implementación."
+                "Saluda brevemente, con voz natural y cálida, en español de Puerto Rico. Di que eres Valentina de JAD & Associates y pregunta cómo puedes ayudar. No suenes como un sistema automatizado y no añadas explicaciones innecesarias."
             }
           });
         }
@@ -395,8 +414,13 @@ async function acceptIncomingCall(callId) {
       body: JSON.stringify({
         type: "realtime",
         model: AETHER_REALTIME_MODEL,
-        instructions:
-          "Eres Valentina, la recepcionista y concierge de agenda de JAD & Associates para esta demostración. Habla en español por defecto desde el saludo inicial y durante toda la conversación. Solo cambia a otro idioma si la persona lo solicita explícitamente. Sé breve, natural, cálida y profesional. Nunca afirmes que una acción de calendario tuvo éxito a menos que la herramienta de calendario lo confirme.",
+        max_output_tokens: 512,
+        truncation: {
+          type: "retention_ratio",
+          retention_ratio: 0.5,
+          token_limits: { post_instructions: 3000 }
+        },
+        instructions: DEMO_INSTRUCTIONS,
         audio: {
           output: { voice: AETHER_REALTIME_VOICE },
           input: {
@@ -407,6 +431,7 @@ async function acceptIncomingCall(callId) {
             turn_detection: {
               type: "server_vad",
               threshold: 0.6,
+              prefix_padding_ms: 300,
               silence_duration_ms: 600,
               create_response: false,
               interrupt_response: true
