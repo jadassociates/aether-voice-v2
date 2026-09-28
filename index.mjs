@@ -282,8 +282,14 @@ function attach(callId) {
         audio: {
           output: { voice: AETHER_REALTIME_VOICE },
           input: {
+            transcription: {
+              model: "gpt-realtime-whisper",
+              language: "es"
+            },
             turn_detection: {
               type: "server_vad",
+              threshold: 0.6,
+              silence_duration_ms: 600,
               create_response: false,
               interrupt_response: true
             }
@@ -384,7 +390,20 @@ async function acceptIncomingCall(callId) {
         instructions:
           "You are Valentina, the bilingual front desk and scheduling concierge for JAD & Associates. Be concise, warm, and professional. Never claim a calendar action succeeded unless the calendar tool confirms it.",
         audio: {
-          output: { voice: AETHER_REALTIME_VOICE }
+          output: { voice: AETHER_REALTIME_VOICE },
+          input: {
+            transcription: {
+              model: "gpt-realtime-whisper",
+              language: "es"
+            },
+            turn_detection: {
+              type: "server_vad",
+              threshold: 0.6,
+              silence_duration_ms: 600,
+              create_response: false,
+              interrupt_response: true
+            }
+          }
         }
       }),
       signal: AbortSignal.timeout(15000),
