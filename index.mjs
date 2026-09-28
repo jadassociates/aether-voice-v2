@@ -266,6 +266,8 @@ function attach(callId) {
     toolRunning: false,
     completedToolCalls: new Set(),
     connectedAt: null,
+    sessionReady: false,
+    greetingSent: false,
   };
   sessions.set(callId, state);
 
@@ -298,13 +300,6 @@ function attach(callId) {
       }
     });
 
-    createResponse(state, {
-      response: {
-        instructions:
-          "Greet the caller briefly and naturally in the caller's language. Ask how you can help. Do not mention systems, tools, or implementation details."
-      }
-    });
-
     log("info", "sideband_attached", { session: callId });
   });
 
@@ -314,6 +309,19 @@ function attach(callId) {
     catch { return; }
 
     switch (event.type) {
+      case "session.updated":
+        state.sessionReady = true;
+        if (!state.greetingSent) {
+          state.greetingSent = true;
+          createResponse(state, {
+            response: {
+              instructions:
+                "Saluda brevemente y de forma natural en español. Preséntate como Valentina de JAD & Associates y pregunta cómo puedes ayudar. Mantén toda la conversación en español salvo que la persona solicite explícitamente otro idioma. No menciones sistemas, herramientas ni detalles de implementación."
+            }
+          });
+        }
+        break;
+
       case "response.created":
         state.responseActive = true;
         break;
@@ -328,7 +336,7 @@ function attach(callId) {
       }
 
       case "input_audio_buffer.speech_stopped":
-        if (!state.toolRunning && !state.responseActive) createResponse(state);
+        if (state.sessionReady && !state.toolRunning && !state.responseActive) createResponse(state);
         break;
 
       case "input_audio_buffer.speech_started":
@@ -388,7 +396,7 @@ async function acceptIncomingCall(callId) {
         type: "realtime",
         model: AETHER_REALTIME_MODEL,
         instructions:
-          "You are Valentina, the bilingual front desk and scheduling concierge for JAD & Associates. Be concise, warm, and professional. Never claim a calendar action succeeded unless the calendar tool confirms it.",
+          "Eres Valentina, la recepcionista y concierge de agenda de JAD & Associates para esta demostración. Habla en español por defecto desde el saludo inicial y durante toda la conversación. Solo cambia a otro idioma si la persona lo solicita explícitamente. Sé breve, natural, cálida y profesional. Nunca afirmes que una acción de calendario tuvo éxito a menos que la herramienta de calendario lo confirme.",
         audio: {
           output: { voice: AETHER_REALTIME_VOICE },
           input: {
