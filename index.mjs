@@ -383,6 +383,33 @@ function attach(callId) {
     });
   });
 
+  ws.on("unexpected-response", (request, response) => {
+    const chunks = [];
+    let size = 0;
+    response.on("data", (chunk) => {
+      if (size >= 4096) return;
+      const part = Buffer.from(chunk).subarray(0, 4096 - size);
+      chunks.push(part);
+      size += part.length;
+    });
+    response.on("end", () => {
+      let detail = {};
+      try {
+        const payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        detail = {
+          error_type: payload?.error?.type,
+          error_code: payload?.error?.code,
+          error_message: payload?.error?.message,
+        };
+      } catch {}
+      log("error", "sideband_handshake_rejected", {
+        session: callId,
+        status: response.statusCode,
+        ...detail,
+      });
+    });
+  });
+
   ws.on("error", (error) => {
     log("error", "sideband_error", {
       session: callId,
