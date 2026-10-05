@@ -6,6 +6,7 @@ import OpenAI from "openai";
 const {
   PORT = "3000",
   OPENAI_API_KEY = "",
+  AETHER_OPENAI_PROJECT_ID = "",
   OPENAI_WEBHOOK_SECRET = "",
   SIDECAR_SHARED_SECRET = "",
   AETHER_VOICE_TOOL_KEY = "",
@@ -266,7 +267,10 @@ function attach(callId) {
 
   const ws = new WebSocket(
     `wss://api.openai.com/v1/realtime?call_id=${encodeURIComponent(callId)}`,
-    { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
+    { headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      ...(AETHER_OPENAI_PROJECT_ID ? { "OpenAI-Project": AETHER_OPENAI_PROJECT_ID } : {}),
+    } }
   );
 
   const state = {
@@ -436,12 +440,14 @@ async function acceptIncomingCall(callId) {
       method: "POST",
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
+        ...(AETHER_OPENAI_PROJECT_ID ? { "OpenAI-Project": AETHER_OPENAI_PROJECT_ID } : {}),
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         type: "realtime",
         model: AETHER_REALTIME_MODEL,
-        instructions: DEMO_INSTRUCTIONS
+        instructions: DEMO_INSTRUCTIONS,
+        audio: { output: { voice: AETHER_REALTIME_VOICE } }
       }),
       signal: AbortSignal.timeout(15000),
     }
