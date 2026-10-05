@@ -441,30 +441,7 @@ async function acceptIncomingCall(callId) {
       body: JSON.stringify({
         type: "realtime",
         model: AETHER_REALTIME_MODEL,
-        max_output_tokens: 512,
-        truncation: {
-          type: "retention_ratio",
-          retention_ratio: 0.5,
-          token_limits: { post_instructions: 3000 }
-        },
-        instructions: DEMO_INSTRUCTIONS,
-        audio: {
-          output: { voice: AETHER_REALTIME_VOICE },
-          input: {
-            transcription: {
-              model: "gpt-realtime-whisper",
-              language: "es"
-            },
-            turn_detection: {
-              type: "server_vad",
-              threshold: 0.6,
-              prefix_padding_ms: 300,
-              silence_duration_ms: 600,
-              create_response: false,
-              interrupt_response: true
-            }
-          }
-        }
+        instructions: DEMO_INSTRUCTIONS
       }),
       signal: AbortSignal.timeout(15000),
     }
