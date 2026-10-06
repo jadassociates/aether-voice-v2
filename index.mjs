@@ -270,6 +270,7 @@ async function handleFunctionCall(state, item) {
   }
 
   state.pendingToolOutput = { toolCallId, output };
+  state.toolRunning = false;
   flushPendingToolOutput(state);
 }
 
