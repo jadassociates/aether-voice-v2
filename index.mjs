@@ -177,9 +177,15 @@ function send(ws, event) {
 }
 
 function createResponse(state, extra = {}) {
-  if (state.closed || state.toolRunning || state.responseActive) return;
+  if (state.closed || state.toolRunning || state.responseActive) return false;
+  state.pendingCallerTranscript = false;
   state.responseActive = true;
-  send(state.ws, { type: "response.create", ...extra });
+  return send(state.ws, { type: "response.create", ...extra });
+}
+
+function maybeRespondToCaller(state) {
+  if (!state.pendingCallerTranscript || state.closed || state.toolRunning || state.responseActive) return;
+  createResponse(state);
 }
 
 async function handleFunctionCall(state, item) {
@@ -287,6 +293,8 @@ function attach(callId) {
     greetingResponseStartedAt: null,
     greetingFirstAudioLogged: false,
     assistantAudioActive: false,
+    pendingCallerTranscript: false,
+    completedInputTranscripts: new Set(),
   };
   sessions.set(callId, state);
 
@@ -310,6 +318,7 @@ function attach(callId) {
         audio: {
           output: { voice: AETHER_REALTIME_VOICE },
           input: {
+            noise_reduction: { type: "near_field" },
             transcription: {
               model: "gpt-realtime-whisper",
               language: "es"
@@ -318,7 +327,7 @@ function attach(callId) {
               type: "server_vad",
               threshold: 0.6,
               prefix_padding_ms: 300,
-              silence_duration_ms: 600,
+              silence_duration_ms: 1100,
               create_response: false,
               interrupt_response: true
             }
@@ -421,11 +430,31 @@ function attach(callId) {
         for (const item of functionCalls) {
           await handleFunctionCall(state, item);
         }
+        maybeRespondToCaller(state);
+        break;
+      }
+
+      case "conversation.item.input_audio_transcription.completed": {
+        const transcript = String(event.transcript || "").trim();
+        const itemId = String(event.item_id || "");
+        if (!transcript || (itemId && state.completedInputTranscripts.has(itemId))) break;
+        if (itemId) {
+          state.completedInputTranscripts.add(itemId);
+          if (state.completedInputTranscripts.size > 128) {
+            state.completedInputTranscripts.delete(state.completedInputTranscripts.values().next().value);
+          }
+        }
+        state.pendingCallerTranscript = true;
+        log("info", "caller_turn_transcript_ready", {
+          session: callId,
+          transcript_chars: transcript.length
+        });
+        maybeRespondToCaller(state);
         break;
       }
 
       case "input_audio_buffer.speech_stopped":
-        if (state.sessionReady && !state.toolRunning && !state.responseActive) createResponse(state);
+        log("debug", "caller_speech_stopped_waiting_for_transcript", { session: callId });
         break;
 
       case "input_audio_buffer.speech_started":
