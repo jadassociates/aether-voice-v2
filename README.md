@@ -1,47 +1,40 @@
-# AETHER Voice V2 — OpenAI Realtime SIP Sidecar
+# AETHER Voice V2 — Valentina inbound and outbound
 
-Persistent Node.js sidecar for AETHER Option C.
+Telnyx carries calls; OpenAI Realtime handles the conversation. Both directions use the existing `AETHER_REALTIME_MODEL`, `AETHER_REALTIME_VOICE` and verified AETHER Google Calendar tools. No Retell or Cal.com integration is required.
 
-## Purpose
+## Inbound
 
-Keeps a long-lived server-side WebSocket attached to an existing OpenAI Realtime SIP call while SIP carries audio. The sidecar:
+Keep +17874224202 assigned to the existing AETHER OpenAI Realtime SIP connection. Signed OpenAI incoming webhooks at `/webhook/realtime/incoming` accept the call and attach the sideband WebSocket. The inbound greeting and tools remain unchanged.
 
-- exposes `/health`
-- accepts authenticated `/attach` and `/detach`
-- connects to `wss://api.openai.com/v1/realtime?call_id=...`
-- installs AETHER function tools with `session.update`
-- uses `input_audio_buffer.speech_stopped` only for turn timing
-- executes tools only from completed model `function_call` items
-- returns `function_call_output`
-- sends `response.create` after tool completion
-- deduplicates tool calls by `call_id`
+## Controlled outbound
 
-## Required environment variables
+The Telnyx Voice API application `AETHER Valentina Outbound` has its own connection ID (`3064472476890170444`) and the Default outbound voice profile. Do not assign the inbound number to this application. It uses the owned number as caller ID while inbound routing stays on the SIP connection.
 
-See `.env.example`.
+1. An authenticated owner request calls `POST /outbound/start`.
+2. Telnyx dials the destination. After it answers, the signed Telnyx webhook dials the existing OpenAI SIP destination and bridges both legs.
+3. A nonce SIP header selects the authorized outbound context. The greeting waits for both the sideband session and Telnyx bridge to be ready.
+4. Valentina verifies identity before discussing the purpose, uses the same calendar tools, and ends the call when requested. A hangup on either leg closes the other.
 
-## Railway
+Set the variables in `.env.example`. Keep `AETHER_OUTBOUND_ENABLED=false` until credentials and a controlled real call are ready. Store `TELNYX_API_KEY` only in Railway secrets. `TELNYX_PUBLIC_KEY` is the account's base64 Ed25519 webhook verification public key.
 
-Start command:
+Example request body (requires the existing SIDECAR_SHARED_SECRET as a bearer token):
 
-```bash
-node index.mjs
+```json
+{
+  "request_id": "unique-owner-request-001",
+  "to": "+17875550123",
+  "contact_name": "Persona de prueba",
+  "call_reason": "Confirmar la orientación que solicitó",
+  "owner_approved": true
+}
 ```
 
-Healthcheck:
+Use a real authorized destination and purpose. This controlled rollout allows one active outbound call, +1 destinations, 30-second ring timeout, and a 10-minute maximum. Reuse the same request ID after an uncertain response; do not retry with a new ID. Provider command IDs and the process ledger suppress duplicates. The ledger is in memory, so restarts during a call require operator reconciliation; this is not a durable campaign queue. An unknown dial result blocks new calls until reconciliation/restart. Do not run multiple replicas for this rollout.
 
-```text
-/health
-```
+## Operations
 
-The service should run continuously (sleep disabled).
+`GET /health` reports inbound configuration and separate outbound readiness, including missing variable names without secrets. Outbound being disabled does not fail inbound health. `/attach`, `/detach`, and `/outbound/start` require the existing shared secret; Telnyx webhooks require a valid Ed25519 signature and fresh timestamp.
 
-## Safety / rollout
+Railway must run continuously with `/health` as healthcheck. Preserve the existing start command that bootstraps the OpenAI webhook signing secret before importing `index.mjs`; plain `node index.mjs` is suitable only when `OPENAI_WEBHOOK_SECRET` is already configured.
 
-This repository is staging infrastructure. Do not route the production phone number to it until:
-
-1. Railway `/health` returns `200`
-2. Base44 webhook can call `/attach`
-3. OpenAI API + Base44 tool secrets are configured
-4. a real PSTN test passes availability lookup and booking
-5. Retell remains available as rollback
+Run `npm ci`, `npm run check`, and `npm test`. Tests mock Telnyx and place no real calls. Before enabling broader use, complete a real inbound regression call and a controlled outbound call verifying greeting, interruption, availability, booking, and cleanup.
