@@ -193,6 +193,22 @@ function maybeRespondToCaller(state) {
   createResponse(state);
 }
 
+function flushPendingToolOutput(state) {
+  if (!state.pendingToolOutput || state.closed || state.toolRunning || state.responseActive) return false;
+  const { toolCallId, output } = state.pendingToolOutput;
+  state.pendingToolOutput = null;
+  send(state.ws, {
+    type: "conversation.item.create",
+    item: {
+      type: "function_call_output",
+      call_id: toolCallId,
+      output: JSON.stringify(output),
+    },
+  });
+  createResponse(state);
+  return true;
+}
+
 async function handleFunctionCall(state, item) {
   const toolCallId = String(item?.call_id || "");
   const name = String(item?.name || "");
@@ -210,6 +226,9 @@ async function handleFunctionCall(state, item) {
   state.completedToolCalls.add(toolCallId);
   state.toolRunning = true;
 
+  // Keep the brief spoken acknowledgment and the verified tool result in one
+  // serialized response queue so the result never races an active response.
+  state.responseActive = true;
   send(state.ws, {
     type: "response.create",
     response: {
@@ -250,18 +269,8 @@ async function handleFunctionCall(state, item) {
     });
   }
 
-  send(state.ws, {
-    type: "conversation.item.create",
-    item: {
-      type: "function_call_output",
-      call_id: toolCallId,
-      output: JSON.stringify(output),
-    },
-  });
-
-  state.toolRunning = false;
-  state.responseActive = false;
-  createResponse(state);
+  state.pendingToolOutput = { toolCallId, output };
+  flushPendingToolOutput(state);
 }
 
 function findFunctionCalls(event) {
@@ -288,6 +297,7 @@ function attach(callId) {
     closed: false,
     responseActive: false,
     toolRunning: false,
+    pendingToolOutput: null,
     completedToolCalls: new Set(),
     connectedAt: null,
     sessionReady: false,
@@ -311,7 +321,7 @@ function attach(callId) {
       session: {
         type: "realtime",
         model: AETHER_REALTIME_MODEL,
-        max_output_tokens: 512,
+        max_output_tokens: 900,
         truncation: {
           type: "retention_ratio",
           retention_ratio: 0.5,
@@ -435,6 +445,7 @@ function attach(callId) {
         for (const item of functionCalls) {
           await handleFunctionCall(state, item);
         }
+        flushPendingToolOutput(state);
         maybeRespondToCaller(state);
         break;
       }
