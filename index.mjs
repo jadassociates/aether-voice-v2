@@ -366,11 +366,13 @@ function attach(callId) {
         }
         break;
 
+      case "output_audio_buffer.started":
       case "response.output_audio.delta":
         if (state.greetingPending && !state.greetingFirstAudioLogged) {
           state.greetingFirstAudioLogged = true;
           log("info", "greeting_first_audio", {
             session: callId,
+            event_type: event.type,
             elapsed_ms: Date.now() - state.acceptedAt,
             generation_ms: Date.now() - state.greetingResponseStartedAt
           });
