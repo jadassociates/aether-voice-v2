@@ -79,7 +79,7 @@ export function createOutbound({ env = process.env, request = fetch, log = () =>
     records.set(id, record); byToken.set(token, record);
     try {
       const call = await api('/calls', { connection_id: config.connection, from: config.from, to,
-        from_display_name: 'JAD Associates', command_id: command(record, 'pstn'),
+        from_display_name: /\b(aether|ae7h3r|ether technologies|aether technologies)\b/i.test(reason) ? 'AETHER Technologies' : 'JAD Associates', command_id: command(record, 'pstn'),
         client_state: clientState(record, 'pstn'), webhook_url: config.webhook, webhook_url_method: 'POST',
         timeout_secs: 30, time_limit_secs: 600, retry_on_timeout: false });
       record.pstnId ||= call.call_control_id;
