@@ -11,6 +11,7 @@ const {
   AETHER_OPENAI_PROJECT_ID = "",
   OPENAI_WEBHOOK_SECRET = "",
   SIDECAR_SHARED_SECRET = "",
+  AETHER_OWNER_TEST_TOKEN = "",
   AETHER_VOICE_TOOL_KEY = "",
   AETHER_CLIENT_ID = "",
   AETHER_AVAILABILITY_URL = "",
@@ -732,6 +733,25 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/webhook/telnyx/outbound") {
       const result = await outbound.webhook(await readRaw(req), req.headers);
+      return json(res, result.code, result.body);
+    }
+
+    if (req.method === "POST" && url.pathname === "/outbound/test-owner") {
+      const token = String(req.headers["x-owner-test-token"] || "");
+      if (!AETHER_OWNER_TEST_TOKEN || !timingSafeEqual(token, AETHER_OWNER_TEST_TOKEN)) {
+        return json(res, 401, { error: "Unauthorized" });
+      }
+      const body = await readJson(req);
+      if (String(body.to || "") !== "+19393267968") {
+        return json(res, 403, { error: "Owner test endpoint is restricted to the approved test number." });
+      }
+      const result = await outbound.start({
+        request_id: String(body.request_id || "aether-test-" + Date.now()),
+        to: "+19393267968",
+        contact_name: String(body.contact_name || "Jay"),
+        call_reason: String(body.call_reason || "AETHER Technologies outbound campaign test. Present AETHER, create curiosity, and aim to schedule a 20 to 30 minute discovery conversation."),
+        owner_approved: true
+      });
       return json(res, result.code, result.body);
     }
 
