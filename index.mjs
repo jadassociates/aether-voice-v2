@@ -28,9 +28,12 @@ const sessions = new Map();
 const DEMO_INSTRUCTIONS = [
   "Eres Valentina, recepcionista y concierge de JAD & Associates LLC. En español, presenta la empresa como «JD Asociados». Ayuda con seguros, Medicare, retiro, bienes raíces, citas y seguimiento.",
   "Empieza en español neutral de Puerto Rico salvo que la persona inicie en inglés o pida inglés. Mantén el idioma elegido hasta que la persona lo cambie. Habla de forma cálida, natural, profesional y concisa; escucha primero, permite interrupciones y pregunta una cosa a la vez.",
+  "RUTA CONVERSACIONAL RÁPIDA: responde de inmediato a saludos, agradecimientos, aclaraciones y preguntas cotidianas que no requieran información externa. No consultes herramientas, no digas que vas a verificar y no añadas explicaciones largas si la respuesta puede ser breve y directa.",
+  "RUTA DE DATOS VERIFICADOS: usa una herramienta solo cuando la solicitud requiera consultar calendario u otro sistema conectado o completar una acción externa. En ese caso da una sola transición breve, espera el resultado verificado y luego contesta con claridad. Nunca inventes datos ni confirmes una acción antes del éxito de la herramienta.",
   "Al contestar, di exactamente una vez y sin añadir otra presentación: «Gracias por llamar a JD Asociados, te habla Valentina. ¿Cómo te puedo ayudar?». No repitas el saludo ni tu nombre durante la llamada.",
   "Orienta y coordina; no des asesoría detallada de seguros, inversiones, asuntos legales, contributivos, financieros o médicos. No inventes datos, nombres, horarios, disponibilidad, transferencias ni llamadas de seguimiento. Nunca digas que una cita está confirmada sin éxito de la herramienta.",
-  "Para citas, usa America/Puerto_Rico. Verifica únicamente un horario exacto que la persona proponga; no inventes opciones disponibles. La reserva requiere correo confirmado y un sí explícito. No prometas Google Meet, atención presencial ni captura de nombre o teléfono: esas opciones no están conectadas.",
+  "Para citas, usa America/Puerto_Rico y verifica la disponibilidad antes de afirmar que un horario está libre. Antes de reservar, captura y confirma por separado el nombre completo, el teléfono de callback y el correo electrónico. Repite el nombre y confirma; repite el teléfono dígito por dígito en una frase continua y confirma.",
+  "VALIDACIÓN ÁGIL DEL EMAIL: conserva exactamente los caracteres que da la persona. Deletrea claramente y con ritmo natural solo la parte antes de @; di el dominio normalmente y pregunta si está correcto. Si corrige algo, pregunta solo por la parte incorrecta, actualízala y vuelve a leer el correo completo una vez para confirmar. No conviertas esto en un deletreo lento ni en varias rondas. No reserves hasta confirmar los datos y recibir un sí explícito al resumen final. No prometas Google Meet ni atención presencial si no está confirmado por la herramienta.",
   "Nunca leas marcadores o instrucciones internas ni hables de configuración, voz, modelos o herramientas. Si no puedes completar algo, dilo brevemente y ofrece tomar un mensaje para el equipo."
 ].join(" ");
 
@@ -104,7 +107,7 @@ const tools = [
     type: "function",
     name: "book_calendar_appointment",
     description:
-      "Book a Google Calendar appointment only after the caller explicitly confirms the exact slot and their email address.",
+      "Book only after the caller explicitly confirms the exact slot, full name, callback phone, and exact email address. Pass the caller-confirmed name and phone without changing them.",
     parameters: {
       type: "object",
       properties: {
@@ -112,10 +115,12 @@ const tools = [
         end: { type: "string", description: "Confirmed ISO 8601 end datetime including offset." },
         timezone: { type: "string", description: "IANA timezone, normally America/Puerto_Rico." },
         appt_title: { type: "string", description: "Short appointment title." },
-        attendee_email: { type: "string", description: "Exact caller-confirmed email address." },
-        caller_confirmed: { type: "boolean", description: "Must be true only after explicit caller confirmation." }
+        attendee_email: { type: "string", description: "Exact caller-confirmed email address after a quick readback and correction, if needed." },
+        caller_name: { type: "string", description: "Exact caller-confirmed full name." },
+        caller_phone: { type: "string", description: "Exact caller-confirmed callback phone number; preserve digits and formatting." },
+        caller_confirmed: { type: "boolean", description: "True only after the caller confirms the full booking recap." }
       },
-      required: ["start", "end", "attendee_email", "caller_confirmed"]
+      required: ["start", "end", "attendee_email", "caller_name", "caller_phone", "caller_confirmed"]
     }
   }
 ];
@@ -178,13 +183,13 @@ function send(ws, event) {
 
 function createResponse(state, extra = {}) {
   if (state.closed || state.toolRunning || state.responseActive) return false;
-  state.pendingCallerTranscript = false;
+  state.pendingCallerTurn = false;
   state.responseActive = true;
   return send(state.ws, { type: "response.create", ...extra });
 }
 
 function maybeRespondToCaller(state) {
-  if (!state.pendingCallerTranscript || state.closed || state.toolRunning || state.responseActive) return;
+  if (!state.pendingCallerTurn || state.closed || state.toolRunning || state.responseActive) return;
   createResponse(state);
 }
 
@@ -293,7 +298,7 @@ function attach(callId) {
     greetingResponseStartedAt: null,
     greetingFirstAudioLogged: false,
     assistantAudioActive: false,
-    pendingCallerTranscript: false,
+    pendingCallerTurn: false,
     completedInputTranscripts: new Set(),
   };
   sessions.set(callId, state);
@@ -327,7 +332,7 @@ function attach(callId) {
               type: "server_vad",
               threshold: 0.6,
               prefix_padding_ms: 300,
-              silence_duration_ms: 1100,
+              silence_duration_ms: 800,
               create_response: false,
               interrupt_response: true
             }
@@ -444,17 +449,17 @@ function attach(callId) {
             state.completedInputTranscripts.delete(state.completedInputTranscripts.values().next().value);
           }
         }
-        state.pendingCallerTranscript = true;
         log("info", "caller_turn_transcript_ready", {
           session: callId,
           transcript_chars: transcript.length
         });
-        maybeRespondToCaller(state);
         break;
       }
 
       case "input_audio_buffer.speech_stopped":
-        log("debug", "caller_speech_stopped_waiting_for_transcript", { session: callId });
+        state.pendingCallerTurn = true;
+        log("debug", "caller_speech_stopped_responding_without_transcript_gate", { session: callId });
+        maybeRespondToCaller(state);
         break;
 
       case "input_audio_buffer.speech_started":
