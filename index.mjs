@@ -69,6 +69,26 @@ function log(level, message, meta = {}) {
   }));
 }
 
+function realtimeUsageCost(usage) {
+  const i = usage?.input_token_details || {};
+  const o = usage?.output_token_details || {};
+  const cached = i.cached_tokens_details || {};
+  const inputText = Number(i.text_tokens || 0);
+  const inputAudio = Number(i.audio_tokens || 0);
+  const cachedText = Math.min(inputText, Number(cached.text_tokens || 0));
+  const cachedAudio = Math.min(inputAudio, Number(cached.audio_tokens || 0));
+  const outputText = Number(o.text_tokens || 0);
+  const outputAudio = Number(o.audio_tokens || 0);
+  const costUsd = ((inputText - cachedText) * 4 + cachedText * 0.4 + (inputAudio - cachedAudio) * 32 + cachedAudio * 0.4 + outputText * 24 + outputAudio * 64) / 1e6;
+  return { inputText, inputAudio, cachedText, cachedAudio, outputText, outputAudio, costUsd };
+}
+
+function transcriptionUsageCost(usage) {
+  const audioTokens = Number(usage?.input_token_details?.audio_tokens || 0);
+  const seconds = usage?.type === "duration" ? Number(usage.seconds || 0) : audioTokens * 0.1;
+  return { audioTokens, seconds, costUsd: Math.max(0, seconds) * 0.017 / 60 };
+}
+
 function json(res, status, body) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(body));
@@ -498,6 +518,22 @@ function attach(callId, context = null) {
 
       case "response.done": {
         state.responseActive = false;
+        const usage = realtimeUsageCost(event.response?.usage);
+        state.estimatedUsageCostUsd = Number(state.estimatedUsageCostUsd || 0) + usage.costUsd;
+        log("info", "realtime_usage", {
+          session: callId,
+          source: "valentina_voice",
+          model: AETHER_REALTIME_MODEL,
+          response_id: event.response?.id || "",
+          input_text_tokens: usage.inputText,
+          input_audio_tokens: usage.inputAudio,
+          cached_text_tokens: usage.cachedText,
+          cached_audio_tokens: usage.cachedAudio,
+          output_text_tokens: usage.outputText,
+          output_audio_tokens: usage.outputAudio,
+          estimated_cost_usd: Number(usage.costUsd.toFixed(6)),
+          session_cost_usd: Number(state.estimatedUsageCostUsd.toFixed(6))
+        });
         log("info", "assistant_response_done", {
           session: callId,
           status: event.response?.status || "unknown",
@@ -521,6 +557,20 @@ function attach(callId, context = null) {
       }
 
       case "conversation.item.input_audio_transcription.completed": {
+        const txUsage = transcriptionUsageCost(event.usage);
+        state.estimatedUsageCostUsd = Number(state.estimatedUsageCostUsd || 0) + txUsage.costUsd;
+        if (event.usage) {
+          log("info", "transcription_usage", {
+            session: callId,
+            source: "valentina_voice",
+            model: "gpt-realtime-whisper",
+            item_id: event.item_id || "",
+            input_audio_tokens: txUsage.audioTokens,
+            transcription_seconds: Number(txUsage.seconds.toFixed(2)),
+            estimated_cost_usd: Number(txUsage.costUsd.toFixed(6)),
+            session_cost_usd: Number(state.estimatedUsageCostUsd.toFixed(6))
+          });
+        }
         const transcript = String(event.transcript || "").trim();
         const itemId = String(event.item_id || "");
         if (!transcript || (itemId && state.completedInputTranscripts.has(itemId))) break;
