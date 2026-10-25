@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "purpose": "Perfiles para desarrollo de AETHER; no agentes operativos de clientes.",
+  "execution": {
+    "mode": "manual",
+    "defaultSpecialistsPerTask": 1,
+    "automaticDelegation": false,
+    "networkCalls": false,
+    "modelCalls": false
+  },
+  "profiles": {
+    "backend": {
+      "name": "Arquitectura y backend",
+      "path": "profiles/backend.md",
+      "source": "https://github.com/msitarzewski/agency-agents/blob/main/engineering/engineering-backend-architect.md",
+      "sourceBlob": "f3731dd50da10c71d2c40a5ff319d7984afe7efd"
+    },
+    "frontend": {
+      "name": "Interfaz",
+      "path": "profiles/frontend.md",
+      "source": "https://github.com/msitarzewski/agency-agents/blob/main/engineering/engineering-frontend-developer.md",
+      "sourceBlob": "ef135b7b937c985449cb93115f8461ee7353b9f6"
+    },
+    "reviewer": {
+      "name": "Revisión de código",
+      "path": "profiles/reviewer.md",
+      "source": "https://github.com/msitarzewski/agency-agents/blob/main/engineering/engineering-code-reviewer.md",
+      "sourceBlob": "fb93291f4b94a8d5687aa1cc0d05741c3352dd22"
+    }
+  }
+}
+
