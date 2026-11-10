@@ -16,6 +16,7 @@ const {
   AETHER_CLIENT_ID = "",
   AETHER_INBOUND_CLIENTS_JSON = "{}",
   AETHER_PRIMARY_INBOUND_NUMBER = "",
+  AETHER_LEGACY_INBOUND_NUMBERS = "",
   AETHER_AVAILABILITY_URL = "",
   AETHER_BOOKING_URL = "",
   AETHER_REALTIME_MODEL = "gpt-realtime-2.1",
@@ -39,8 +40,13 @@ for (const [number, client] of Object.entries(JSON.parse(AETHER_INBOUND_CLIENTS_
   inboundClients.set(number, client);
 }
 
-if (inboundClients.size && (!/^\+1\d{10}$/.test(AETHER_PRIMARY_INBOUND_NUMBER) || inboundClients.has(AETHER_PRIMARY_INBOUND_NUMBER))) {
-  throw new Error("Configure a separate primary AETHER inbound number before enabling client routes");
+const legacyInboundNumbers = new Set([
+  AETHER_PRIMARY_INBOUND_NUMBER,
+  ...AETHER_LEGACY_INBOUND_NUMBERS.split(","),
+].map(number => number.trim()).filter(Boolean));
+if (inboundClients.size && (!legacyInboundNumbers.size ||
+    [...legacyInboundNumbers].some(number => !/^\+1\d{10}$/.test(number) || inboundClients.has(number)))) {
+  throw new Error("Configure separate existing AETHER inbound numbers before enabling client routes");
 }
 
 function inboundDestination(headers) {
@@ -771,7 +777,7 @@ async function handleOpenAIWebhook(req, res) {
     if (sessions.has(callId)) return json(res, 200, { accepted: true, duplicate: true });
     const destination = context ? null : inboundDestination(event?.data?.sip_headers);
     const tenant = inboundClients.get(destination) || null;
-    if (!context && inboundClients.size && !tenant && destination !== AETHER_PRIMARY_INBOUND_NUMBER) {
+    if (!context && inboundClients.size && !tenant && !legacyInboundNumbers.has(destination)) {
       await openai.realtime.calls.reject(callId, { status_code: 404 });
       log("warn", "sip_destination_unmapped", { session: callId });
       return json(res, 200, { rejected: true });
