@@ -781,6 +781,13 @@ async function handleOpenAIWebhook(req, res) {
       log("info", "sip_inbound_destination_check", {
         session: callId,
         destination_format: destination ? "nanp_e164" : "unrecognized",
+        sip_header_names: [...new Set((Array.isArray(event?.data?.sip_headers) ? event.data.sip_headers : [])
+          .map(header => String(header?.name || "").toLowerCase())
+          .filter(name => /^[a-z0-9-]{1,64}$/.test(name)))].slice(0, 32),
+        known_destination_headers: (Array.isArray(event?.data?.sip_headers) ? event.data.sip_headers : [])
+          .filter(header => /^(to|t|diversion|history-info|p-called-party-id|x-[a-z0-9-]+)$/i.test(String(header?.name || "")))
+          .filter(header => /(?:^|[^0-9])(?:1)?787(?:[-. ]?)422(?:[-. ]?)(?:4202|4447|4204)(?![0-9])/.test(String(header?.value || "")))
+          .map(header => String(header.name).toLowerCase()).slice(0, 16),
         destination_is_aether: destination === "+17874224202" || destination === "+17874224447",
         destination_is_asegurarte: destination === "+17874224204",
       });
