@@ -14,6 +14,7 @@ const {
   AETHER_OWNER_TEST_TOKEN = "",
   AETHER_VOICE_TOOL_KEY = "",
   AETHER_CLIENT_ID = "",
+  AETHER_INBOUND_CLIENTS_JSON = "{}",
   AETHER_AVAILABILITY_URL = "",
   AETHER_BOOKING_URL = "",
   AETHER_REALTIME_MODEL = "gpt-realtime-2.1",
@@ -27,6 +28,23 @@ const openai = new OpenAI({
 });
 
 const sessions = new Map();
+
+const inboundClients = new Map();
+for (const [number, client] of Object.entries(JSON.parse(AETHER_INBOUND_CLIENTS_JSON))) {
+  if (!/^\+1\d{10}$/.test(number) || !/^[a-f0-9]{24}$/.test(client?.clientId) ||
+      typeof client.businessName !== "string" || !/^[\p{L}\p{N} .&’-]{1,80}$/u.test(client.businessName)) {
+    throw new Error("Invalid AETHER inbound client configuration");
+  }
+  inboundClients.set(number, client);
+}
+
+function inboundClient(headers) {
+  if (!Array.isArray(headers)) return null;
+  const to = headers.filter(header => String(header?.name).toLowerCase() === "to");
+  if (to.length !== 1) return null;
+  const destination = String(to[0]?.value || "").match(/(?:^|<)(?:sips?:|tel:)(\+1\d{10})(?=[@;>]|$)/i);
+  return destination ? inboundClients.get(destination[1]) || null : null;
+}
 
 const DEMO_INSTRUCTIONS = [
   "Eres Valentina, asistente de inteligencia artificial y concierge oficial de AETHER Technologies. Esta línea entrante es exclusivamente de AETHER Technologies, no de JD Asociados ni JAD & Associates. Ayuda a empresas interesadas en AETHER con información sobre automatización, CRM, integración de correo, calendario, asistentes de voz, demostraciones, citas y seguimiento. No prometas funciones o precios no verificados.",
@@ -169,13 +187,13 @@ const tools = [
   }
 ];
 
-async function callAetherTool(url, body, callId) {
+async function callAetherTool(url, body, callId, clientId) {
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "x-aether-tool-key": AETHER_VOICE_TOOL_KEY,
-      "x-aether-client-id": AETHER_CLIENT_ID,
+      "x-aether-client-id": clientId,
     },
     body: JSON.stringify({
       ...body,
@@ -200,12 +218,12 @@ async function callAetherTool(url, body, callId) {
   return payload;
 }
 
-async function executeTool(name, args, callId) {
+async function executeTool(name, args, callId, clientId) {
   if (name === "get_calendar_availability") {
-    return callAetherTool(AETHER_AVAILABILITY_URL, args, callId);
+    return callAetherTool(AETHER_AVAILABILITY_URL, args, callId, clientId);
   }
   if (name === "book_calendar_appointment") {
-    return callAetherTool(AETHER_BOOKING_URL, args, callId);
+    return callAetherTool(AETHER_BOOKING_URL, args, callId, clientId);
   }
   return { success: false, error: `Unknown tool: ${name}` };
 }
@@ -305,7 +323,7 @@ async function handleFunctionCall(state, item) {
       tool_call_id: toolCallId
     });
 
-    output = await executeTool(name, args, state.callId);
+    output = await executeTool(name, args, state.callId, state.tenant?.clientId || AETHER_CLIENT_ID);
 
     log("info", "tool_finished", {
       session: state.callId,
@@ -343,7 +361,13 @@ function isAetherCampaignContext(context) {
   return /\b(aether|ae7h3r|ether technologies|aether technologies|intelligence layer|the work starts after hello)\b/i.test(reason);
 }
 
-function callInstructions(context) {
+function callInstructions(context, tenant) {
+  if (tenant) return [
+    `Eres Valentina, asistente telefónica de ${tenant.businessName}. Habla en español natural de Puerto Rico.`,
+    "Ofrece ayuda con orientación general, mensajes y citas. No brindes asesoría sobre seguros, cotizaciones ni información privada de pólizas.",
+    "Consulta disponibilidad con la herramienta antes de ofrecer un horario. Pide nombre, teléfono y correo para una cita. Lee el correo completo en voz alta y espera una confirmación explícita antes de reservar.",
+    "Confirma una cita solamente cuando la herramienta de reserva indique éxito. Si una herramienta falla, informa que no pudiste completar la gestión. Nunca uses ni menciones la agenda de otro negocio.",
+  ].join(" ");
   if (!context) return DEMO_INSTRUCTIONS;
 
   if (isAetherCampaignContext(context)) {
@@ -368,7 +392,9 @@ function startGreeting(state) {
   state.greetingRequestedAt = Date.now();
 
   const aetherCampaign = isAetherCampaignContext(state.context);
-  createResponse(state, { response: { instructions: state.context
+  createResponse(state, { response: { instructions: state.tenant
+    ? `Di exactamente una sola vez: «Gracias por llamar a ${state.tenant.businessName}. Soy Valentina. ¿En qué puedo ayudarte hoy?»`
+    : state.context
     ? (aetherCampaign
       ? "Di exactamente: «Hola, te habla Valentina. ¿Con quién tengo el gusto?». Mantén una energía jovial, segura y natural. Cuando responda con su nombre, enlaza de forma natural con «Un placer, [primer nombre]. Soy Valentina, la asistente de IA de AETHER Technologies. ¿Te puedo tomar unos 30 segundos?». Nunca respondas «Perfecto» o «Excelente» solo por haber recibido el nombre."
       : "Di exactamente: «Hola, te habla Valentina de J-A-D y Asociados. ¿Con quién tengo el gusto?». No repitas la presentación.")
@@ -380,7 +406,7 @@ const outbound = createOutbound({ log,
   onEnd: context => { if (context.openaiCallId) detach(context.openaiCallId); }
 });
 
-function attach(callId, context = null) {
+function attach(callId, context = null, tenant = null) {
   const existing = sessions.get(callId);
   if (existing && !existing.closed) return existing;
 
@@ -395,6 +421,7 @@ function attach(callId, context = null) {
   const state = {
     callId,
     context,
+    tenant,
     ws,
     closed: false,
     responseActive: false,
@@ -429,7 +456,7 @@ function attach(callId, context = null) {
           retention_ratio: 0.5,
           token_limits: { post_instructions: 3000 }
         },
-        instructions: callInstructions(context),
+        instructions: callInstructions(context, tenant),
         tools: context ? [...tools, { type: "function", name: "end_call", description: "End this outbound call when the person asks to stop or the conversation is complete.", parameters: { type: "object", properties: {} } }] : tools,
         tool_choice: "auto",
         audio: {
@@ -675,7 +702,7 @@ function detach(callId) {
   return true;
 }
 
-async function acceptIncomingCall(callId, context = null) {
+async function acceptIncomingCall(callId, context = null, tenant = null) {
   const response = await fetch(
     `https://api.openai.com/v1/realtime/calls/${encodeURIComponent(callId)}/accept`,
     {
@@ -688,7 +715,7 @@ async function acceptIncomingCall(callId, context = null) {
       body: JSON.stringify({
         type: "realtime",
         model: AETHER_REALTIME_MODEL,
-        instructions: callInstructions(context),
+        instructions: callInstructions(context, tenant),
         audio: { output: { voice: AETHER_REALTIME_VOICE } }
       }),
       signal: AbortSignal.timeout(15000),
@@ -737,9 +764,10 @@ async function handleOpenAIWebhook(req, res) {
     const context = outbound.resolveContext(event?.data?.sip_headers);
     if (context) context.openaiCallId = callId;
     if (sessions.has(callId)) return json(res, 200, { accepted: true, duplicate: true });
-    await acceptIncomingCall(callId, context);
+    const tenant = context ? null : inboundClient(event?.data?.sip_headers);
+    await acceptIncomingCall(callId, context, tenant);
 
-    const state = attach(callId, context);
+    const state = attach(callId, context, tenant);
 
     log("info", "sip_call_accepted", { session: callId });
 
