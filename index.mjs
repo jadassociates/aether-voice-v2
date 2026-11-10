@@ -15,6 +15,7 @@ const {
   AETHER_VOICE_TOOL_KEY = "",
   AETHER_CLIENT_ID = "",
   AETHER_INBOUND_CLIENTS_JSON = "{}",
+  AETHER_PRIMARY_INBOUND_NUMBER = "",
   AETHER_AVAILABILITY_URL = "",
   AETHER_BOOKING_URL = "",
   AETHER_REALTIME_MODEL = "gpt-realtime-2.1",
@@ -38,12 +39,16 @@ for (const [number, client] of Object.entries(JSON.parse(AETHER_INBOUND_CLIENTS_
   inboundClients.set(number, client);
 }
 
-function inboundClient(headers) {
+if (inboundClients.size && (!/^\+1\d{10}$/.test(AETHER_PRIMARY_INBOUND_NUMBER) || inboundClients.has(AETHER_PRIMARY_INBOUND_NUMBER))) {
+  throw new Error("Configure a separate primary AETHER inbound number before enabling client routes");
+}
+
+function inboundDestination(headers) {
   if (!Array.isArray(headers)) return null;
   const to = headers.filter(header => String(header?.name).toLowerCase() === "to");
   if (to.length !== 1) return null;
   const destination = String(to[0]?.value || "").match(/(?:^|<)(?:sips?:|tel:)(\+1\d{10})(?=[@;>]|$)/i);
-  return destination ? inboundClients.get(destination[1]) || null : null;
+  return destination?.[1] || null;
 }
 
 const DEMO_INSTRUCTIONS = [
@@ -764,7 +769,13 @@ async function handleOpenAIWebhook(req, res) {
     const context = outbound.resolveContext(event?.data?.sip_headers);
     if (context) context.openaiCallId = callId;
     if (sessions.has(callId)) return json(res, 200, { accepted: true, duplicate: true });
-    const tenant = context ? null : inboundClient(event?.data?.sip_headers);
+    const destination = context ? null : inboundDestination(event?.data?.sip_headers);
+    const tenant = inboundClients.get(destination) || null;
+    if (!context && inboundClients.size && !tenant && destination !== AETHER_PRIMARY_INBOUND_NUMBER) {
+      await openai.realtime.calls.reject(callId, { status_code: 404 });
+      log("warn", "sip_destination_unmapped", { session: callId });
+      return json(res, 200, { rejected: true });
+    }
     await acceptIncomingCall(callId, context, tenant);
 
     const state = attach(callId, context, tenant);
