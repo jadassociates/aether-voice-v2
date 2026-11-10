@@ -777,6 +777,14 @@ async function handleOpenAIWebhook(req, res) {
     if (sessions.has(callId)) return json(res, 200, { accepted: true, duplicate: true });
     const destination = context ? null : inboundDestination(event?.data?.sip_headers);
     const tenant = inboundClients.get(destination) || null;
+    if (!context) {
+      log("info", "sip_inbound_destination_check", {
+        session: callId,
+        destination_format: destination ? "nanp_e164" : "unrecognized",
+        destination_is_aether: destination === "+17874224202" || destination === "+17874224447",
+        destination_is_asegurarte: destination === "+17874224204",
+      });
+    }
     if (!context && inboundClients.size && !tenant && !legacyInboundNumbers.has(destination)) {
       await openai.realtime.calls.reject(callId, { status_code: 404 });
       log("warn", "sip_destination_unmapped", { session: callId });
