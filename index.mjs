@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import WebSocket from "ws";
 import OpenAI from "openai";
 import { createOutbound } from "./outbound.mjs";
+import { createInbound } from "./inbound.mjs";
 import { waitForPlayout } from "./playout.mjs";
 
 const {
@@ -412,6 +413,8 @@ function startGreeting(state) {
      : "Di exactamente una sola vez, empezando en inglés estadounidense y cambiando luego al español: «Welcome to AETHER Technologies. Bienvenido al futuro de los negocios. Soy Valentina, tu conexión inteligente. ¿Qué podemos hacer por ti hoy?». Pronuncia AETHER Technologies en inglés estadounidense. No repitas la presentación." } });
 }
 
+const inbound = createInbound({ clients: inboundClients, log });
+
 const outbound = createOutbound({ log,
   onReady: context => { if (context.openaiCallId) { const state = sessions.get(context.openaiCallId); if (state) startGreeting(state); } },
   onEnd: context => { if (context.openaiCallId) detach(context.openaiCallId); }
@@ -776,7 +779,15 @@ async function handleOpenAIWebhook(req, res) {
     if (context) context.openaiCallId = callId;
     if (sessions.has(callId)) return json(res, 200, { accepted: true, duplicate: true });
     const destination = context ? null : inboundDestination(event?.data?.sip_headers);
-    const tenant = inboundClients.get(destination) || null;
+    let tenant;
+    try {
+      tenant = inbound.resolveTenant(event?.data?.sip_headers, callId);
+      if (tenant && context) throw new Error("Conflicting SIP contexts");
+    } catch {
+      await openai.realtime.calls.reject(callId, { status_code: 403 });
+      log("warn", "sip_inbound_context_rejected", { session: callId });
+      return json(res, 200, { rejected: true });
+    }
     if (!context) {
       log("info", "sip_inbound_destination_check", {
         session: callId,
@@ -792,7 +803,7 @@ async function handleOpenAIWebhook(req, res) {
         destination_is_asegurarte: destination === "+17874224204",
       });
     }
-    if (!context && inboundClients.size && !tenant && !legacyInboundNumbers.has(destination)) {
+    if (!context && !tenant && inboundClients.has(destination)) {
       await openai.realtime.calls.reject(callId, { status_code: 404 });
       log("warn", "sip_destination_unmapped", { session: callId });
       return json(res, 200, { rejected: true });
@@ -844,6 +855,11 @@ const server = http.createServer(async (req, res) => {
     // the OpenAI webhook signing secret, not SIDECAR_SHARED_SECRET.
     if (req.method === "POST" && url.pathname === "/webhook/realtime/incoming") {
       return handleOpenAIWebhook(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/webhook/telnyx/inbound") {
+      const result = await inbound.webhook(await readRaw(req), req.headers);
+      return json(res, result.code, result.body);
     }
 
     if (req.method === "POST" && url.pathname === "/webhook/telnyx/outbound") {
