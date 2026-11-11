@@ -161,7 +161,15 @@ function requiredConfig() {
   return missing;
 }
 
+const MIGUEL_TRANSFER_NUMBER = "+17876348790";
+const MIGUEL_TRANSFER_ENABLED = process.env.AETHER_MIGUEL_TRANSFER_ENABLED === "true";
+
 const tools = [
+  {
+    type: "function", name: "transfer_to_miguel",
+    description: "Transfer the current inbound ASEGURARTE call to Miguel Santiago only when the caller explicitly asks to speak with Miguel. Never use for another business or outbound calls.",
+    parameters: { type: "object", properties: {} }
+  },
   {
     type: "function",
     name: "get_calendar_availability",
@@ -300,6 +308,35 @@ async function handleFunctionCall(state, item) {
   state.completedToolCalls.add(toolCallId);
   state.toolRunning = true;
 
+  if (name === "transfer_to_miguel") {
+    let output;
+    const eligible = !state.context && (state.tenant && /miguel\s+santiago|asegurarte/i.test(state.tenant.businessName));
+    if (!eligible || !MIGUEL_TRANSFER_ENABLED || state.closed || state.transferRequested) {
+      output = { success: false, error: "Transferencia no disponible en esta línea. Ofrece tomar un mensaje." };
+    } else {
+      state.transferRequested = true;
+      try {
+        if (!await waitForPlayout(state)) throw new Error("Audio de transición no completado");
+        const response = await fetch(`https://api.openai.com/v1/realtime/calls/${encodeURIComponent(state.callId)}/refer`, {
+          method: "POST", headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "Content-Type": "application/json",
+            ...(AETHER_OPENAI_PROJECT_ID ? { "OpenAI-Project": AETHER_OPENAI_PROJECT_ID } : {}) },
+          body: JSON.stringify({ target_uri: `tel:${MIGUEL_TRANSFER_NUMBER}` }), signal: AbortSignal.timeout(15000)
+        });
+        if (!response.ok) throw new Error(`SIP REFER rejected (${response.status})`);
+        log("info", "miguel_transfer_referred", { session: state.callId });
+        return;
+      } catch (error) {
+        state.transferRequested = false;
+        log("error", "miguel_transfer_failed", { session: state.callId, error: String(error.message || error) });
+        output = { success: false, error: "No fue posible transferir la llamada. Ofrece tomar un mensaje." };
+      }
+    }
+    state.pendingToolOutput = { toolCallId, output };
+    state.toolRunning = false;
+    flushPendingToolOutput(state);
+    return;
+  }
+
   if (name === "end_call" && state.context) {
     try {
       if (!await waitForPlayout(state)) {
@@ -379,6 +416,7 @@ function callInstructions(context, tenant) {
     "Ofrece ayuda con orientación general, mensajes y citas. No brindes asesoría sobre seguros, cotizaciones ni información privada de pólizas.",
     "Consulta disponibilidad con la herramienta antes de ofrecer un horario. Pide nombre, teléfono y correo para una cita. Lee el correo completo en voz alta y espera una confirmación explícita antes de reservar.",
     "Confirma una cita solamente cuando la herramienta de reserva indique éxito. Si una herramienta falla, informa que no pudiste completar la gestión. Nunca uses ni menciones la agenda de otro negocio.",
+    /miguel\s+santiago|asegurarte/i.test(tenant.businessName) ? "Si el cliente solicita hablar con Miguel Santiago, di «Con mucho gusto, le comunico con Miguel. Un momento, por favor» y utiliza transfer_to_miguel. Si falla, ofrece tomar un mensaje. No afirmes que Miguel contestó hasta verificarlo." : "",
   ].join(" ");
   if (!context) return DEMO_INSTRUCTIONS;
 
@@ -471,7 +509,7 @@ function attach(callId, context = null, tenant = null) {
           token_limits: { post_instructions: 3000 }
         },
         instructions: callInstructions(context, tenant),
-        tools: context ? [...tools, { type: "function", name: "end_call", description: "End this outbound call when the person asks to stop or the conversation is complete.", parameters: { type: "object", properties: {} } }] : tools,
+        tools: context ? [...tools.filter(tool => tool.name !== "transfer_to_miguel"), { type: "function", name: "end_call", description: "End this outbound call when the person asks to stop or the conversation is complete.", parameters: { type: "object", properties: {} } }] : (tenant && /miguel\s+santiago|asegurarte/i.test(tenant.businessName) ? tools : tools.filter(tool => tool.name !== "transfer_to_miguel")),
         tool_choice: "auto",
         audio: {
           output: { voice: AETHER_REALTIME_VOICE },
