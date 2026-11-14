@@ -118,3 +118,17 @@ test('busy and no-answer come from a verified pre-answer hangup cause',async()=>
  await service.webhook(...signed(ended));assert.equal(updates.at(-1),status);
  }
 });
+
+test('Miguel tracked calls pin his own source, identity and callback tenant',async()=>{
+ const updates=[];const {service,requests}=fixture({onChange:r=>updates.push({...r})});
+ await service.start({...body,client_account_id:'6af10aa99b47afc47c29c90f',from:'+17874224204',workspace_tracking:true});
+ assert.equal(requests[0].payload.from,'+17874224204');assert.equal(requests[0].payload.from_display_name,'ASEGURARTE PR');
+ await service.webhook(...signed(event('miguel-answer','call.answered','pstn')));
+ assert.equal(requests[1].payload.from,'+17874224204');assert.equal(updates[0].workspaceId,'6af10aa99b47afc47c29c90f');
+});
+test('a workspace cannot request another workspace source or a disabled tenant',async()=>{
+ const {service,requests}=fixture();
+ assert.equal((await service.start({...body,client_account_id:'6af10aa99b47afc47c29c90f',from:'+17874224202',workspace_tracking:true})).code,403);
+ assert.equal((await service.start({...body,client_account_id:'spag-not-enabled',from:'+17874224204',workspace_tracking:true})).code,403);
+ assert.equal(requests.length,0);
+});
