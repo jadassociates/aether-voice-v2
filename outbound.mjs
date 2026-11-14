@@ -14,7 +14,7 @@ export function verifyTelnyxWebhook(raw, headers, publicKey, now = Date.now()) {
   } catch { return false; }
 }
 
-export function createOutbound({ env = process.env, request = fetch, log = () => {}, onReady = () => {}, onEnd = () => {} } = {}) {
+export function createOutbound({ env = process.env, request = fetch, log = () => {}, onReady = () => {}, onEnd = () => {}, onChange = () => {} } = {}) {
   const records = new Map();
   const byToken = new Map();
   const seen = new Set();
@@ -53,6 +53,7 @@ export function createOutbound({ env = process.env, request = fetch, log = () =>
     try { await api(`/calls/${encodeURIComponent(id)}/actions/hangup`, { command_id: command(record, `hangup:${id}`) }); }
     catch { log('warn', 'outbound_hangup_failed', { request_id: record.id }); }
   }
+  function changed(record) { record.sequence = (record.sequence || 0) + 1; try { onChange(record); } catch { log('warn','outbound_tracking_failed',{request_id:record.id}); } }
   function summary(record) {
     return { request_id: record.id, status: record.status, call_control_id: record.pstnId || null };
   }
@@ -75,7 +76,7 @@ export function createOutbound({ env = process.env, request = fetch, log = () =>
     }
     if (records.size >= 1000) return { code: 503, body: { error: 'Outbound request ledger is full; operator review required' } };
     const token = crypto.createHmac('sha256', config.secret).update(`outbound:${id}`).digest('hex');
-    const record = { id, fingerprint, token, name, reason, status: 'dialing', mediaReady: false, direction: 'outbound' };
+    const record = { id, fingerprint, token, name, reason, status: 'dialing', mediaReady: false, direction: 'outbound', to, from: config.from, tracking: body.workspace_tracking === true, callerTurns: [], sequence: 0 };
     records.set(id, record); byToken.set(token, record);
     try {
       const call = await api('/calls', { connection_id: config.connection, from: config.from, to,
@@ -83,11 +84,12 @@ export function createOutbound({ env = process.env, request = fetch, log = () =>
         client_state: clientState(record, 'pstn'), webhook_url: config.webhook, webhook_url_method: 'POST',
         timeout_secs: 30, time_limit_secs: 600, retry_on_timeout: false });
       record.pstnId ||= call.call_control_id;
+      changed(record);
       log('info', 'outbound_started', { request_id: id });
       return { code: 202, body: summary(record) };
     } catch {
       // An ambiguous network error is not permission to place another call.
-      record.status = 'unknown';
+      record.status = 'unknown'; changed(record);
       return { code: 502, body: { ...summary(record), error: 'Call setup result unknown; do not retry with a new request_id' } };
     }
   }
@@ -116,7 +118,9 @@ export function createOutbound({ env = process.env, request = fetch, log = () =>
       const p = data.payload;
       if (state.leg === 'pstn') record.pstnId ||= p.call_control_id;
       else record.sipId ||= p.call_control_id;
+      if (data.event_type === 'call.machine.detection.ended' && ['machine','machine_end_beep','machine_end_silence','machine_end_other'].includes(String(p.result))) record.responderType = 'machine';
       if (data.event_type === 'call.answered' && state.leg === 'pstn' && !record.sipRequested && !['ended', 'failed'].includes(record.status)) {
+        record.answeredAt ||= new Date().toISOString();
         record.sipRequested = true; record.status = 'connecting';
         try {
           const call = await api('/calls', { connection_id: config.connection, from: config.from, to: config.sip,
@@ -133,11 +137,14 @@ export function createOutbound({ env = process.env, request = fetch, log = () =>
       } else if (data.event_type === 'call.bridged' && !['ended', 'failed'].includes(record.status)) {
         record.status = 'connected'; record.mediaReady = true; onReady(record);
       } else if (data.event_type === 'call.hangup') {
-        record.status = 'ended'; record.mediaReady = false;
+        const cause = String(p.hangup_cause || '').toLowerCase();
+        record.status = record.answeredAt ? 'ended' : /busy/.test(cause) ? 'busy' : /no_answer|timeout|no_user_response/.test(cause) ? 'no_answer' : 'failed';
+        record.endedAt = new Date().toISOString(); record.mediaReady = false;
         byToken.delete(record.token); onEnd(record);
         await hangup(record, state.leg === 'pstn' ? record.sipId : record.pstnId);
         record.name = ''; record.reason = '';
       }
+      changed(record);
       seen.add(data.id);
       if (seen.size > 10000) seen.delete(seen.values().next().value);
       log('info', 'outbound_event', { request_id: record.id, event_type: data.event_type, status: record.status });
