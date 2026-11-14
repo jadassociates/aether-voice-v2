@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import WebSocket from "ws";
 import OpenAI from "openai";
 import { createOutbound } from "./outbound.mjs";
+import { createCallReporter } from "./call-reporter.mjs";
 import { createInbound } from "./inbound.mjs";
 import { waitForPlayout } from "./playout.mjs";
 
@@ -453,7 +454,8 @@ function startGreeting(state) {
 
 const inbound = createInbound({ clients: inboundClients, log });
 
-const outbound = createOutbound({ log,
+const reportCall = createCallReporter({ key: AETHER_VOICE_TOOL_KEY, log });
+const outbound = createOutbound({ log, onChange: reportCall,
   onReady: context => { if (context.openaiCallId) { const state = sessions.get(context.openaiCallId); if (state) startGreeting(state); } },
   onEnd: context => { if (context.openaiCallId) detach(context.openaiCallId); }
 });
@@ -663,6 +665,11 @@ function attach(callId, context = null, tenant = null) {
           if (state.completedInputTranscripts.size > 128) {
             state.completedInputTranscripts.delete(state.completedInputTranscripts.values().next().value);
           }
+        }
+        if (state.context?.tracking) {
+          state.context.callerTurns ||= [];
+          state.context.callerTurns.push(transcript.slice(0, 1000));
+          state.context.callerTurns = state.context.callerTurns.slice(-20);
         }
         log("info", "caller_turn_transcript_ready", {
           session: callId,
@@ -905,6 +912,20 @@ const server = http.createServer(async (req, res) => {
       return json(res, result.code, result.body);
     }
 
+    // Dedicated M1ND pilot capability: this key cannot choose another tenant or source line.
+    if (req.method === "POST" && url.pathname === "/outbound/workspace-start") {
+      const token = String(req.headers["x-aether-tool-key"] || "");
+      if (!AETHER_VOICE_TOOL_KEY || !timingSafeEqual(token, AETHER_VOICE_TOOL_KEY)) return json(res,401,{error:"Unauthorized"});
+      const body = await readJson(req);
+      if (body.client_account_id !== "6af7af661a790b508ba68668" || body.from !== "+17874224202" ||
+          process.env.AETHER_OUTBOUND_FROM !== "+17874224202" || body.owner_approved !== true ||
+          !/^mind-[a-f0-9-]{36}$/.test(String(body.request_id || ""))) {
+        return json(res,403,{error:"Workspace call scope mismatch"});
+      }
+      const result = await outbound.start({request_id:body.request_id,to:body.to,contact_name:body.contact_name,
+        call_reason:body.call_reason,owner_approved:true,workspace_tracking:true});
+      return json(res,result.code,result.body);
+    }
     if (req.method === "POST" && url.pathname === "/outbound/test-owner") {
       const token = String(req.headers["x-owner-test-token"] || "");
       if (!AETHER_OWNER_TEST_TOKEN || !timingSafeEqual(token, AETHER_OWNER_TEST_TOKEN)) {
