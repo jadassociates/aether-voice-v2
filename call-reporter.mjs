@@ -1,6 +1,6 @@
 export function createCallReporter({ key, request = fetch, log = () => {}, pause = ms => new Promise(r => setTimeout(r,ms)) }) {
   const queues = new Map();
-  const url = "https://app.base44.com/api/apps/6a8c8d74eac265b80c1c368c/functions/voiceCallEvents";
+  const url = "https://untitled-0c1c368c.base44.app/api/apps/6a8c8d74eac265b80c1c368c/functions/voiceCallEvents";
   return record => {
     if (!record.tracking) return;
     const at = record.endedAt || new Date().toISOString();
