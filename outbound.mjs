@@ -14,6 +14,11 @@ export function verifyTelnyxWebhook(raw, headers, publicKey, now = Date.now()) {
   } catch { return false; }
 }
 
+export const WORKSPACE_CALL_PROFILES = {
+  "6af7af661a790b508ba68668": { from: "+17874224202", businessName: "AETHER Technologies" },
+  "6af10aa99b47afc47c29c90f": { from: "+17874224204", businessName: "ASEGURARTE PR" }
+};
+
 export function createOutbound({ env = process.env, request = fetch, log = () => {}, onReady = () => {}, onEnd = () => {}, onChange = () => {} } = {}) {
   const records = new Map();
   const byToken = new Map();
@@ -60,14 +65,18 @@ export function createOutbound({ env = process.env, request = fetch, log = () =>
   async function start(body) {
     if (!readiness().ready) return { code: 503, body: { error: 'Outbound is not configured', ...readiness() } };
     const id = String(body.request_id || '');
+    const workspaceId = body.workspace_tracking === true ? String(body.client_account_id || "6af7af661a790b508ba68668") : "";
+    const profile = WORKSPACE_CALL_PROFILES[workspaceId];
+    const from = body.workspace_tracking === true ? profile?.from : config.from;
+    if (!from || (body.from && body.from !== from)) return { code: 403, body: { error: "Source line does not match workspace" } };
     const to = String(body.to || '');
     const reason = String(body.call_reason || '').trim();
     const name = String(body.contact_name || '').trim();
-    if (!/^[a-zA-Z0-9_-]{8,128}$/.test(id) || !/^\+1\d{10}$/.test(to) || to === config.from ||
+    if (!/^[a-zA-Z0-9_-]{8,128}$/.test(id) || !/^\+1\d{10}$/.test(to) || to === from ||
         !reason || reason.length > 1000 || name.length > 150 || body.owner_approved !== true) {
       return { code: 400, body: { error: 'Provide request_id, +1 destination, real call_reason and owner_approved=true' } };
     }
-    const fingerprint = crypto.createHash('sha256').update(JSON.stringify({ to, reason, name })).digest('hex');
+    const fingerprint = crypto.createHash('sha256').update(JSON.stringify({ to, reason, name, from, workspaceId })).digest('hex');
     const existing = records.get(id);
     if (existing) return { code: existing.fingerprint === fingerprint ? 200 : 409,
       body: existing.fingerprint === fingerprint ? summary(existing) : { error: 'request_id already used with different details' } };
@@ -76,11 +85,11 @@ export function createOutbound({ env = process.env, request = fetch, log = () =>
     }
     if (records.size >= 1000) return { code: 503, body: { error: 'Outbound request ledger is full; operator review required' } };
     const token = crypto.createHmac('sha256', config.secret).update(`outbound:${id}`).digest('hex');
-    const record = { id, fingerprint, token, name, reason, status: 'dialing', mediaReady: false, direction: 'outbound', to, from: config.from, tracking: body.workspace_tracking === true, callerTurns: [], sequence: 0 };
+    const record = { id, fingerprint, token, name, reason, status: 'dialing', mediaReady: false, direction: 'outbound', to, from, workspaceId, businessName: profile?.businessName || '', tracking: body.workspace_tracking === true, callerTurns: [], sequence: 0 };
     records.set(id, record); byToken.set(token, record);
     try {
-      const call = await api('/calls', { connection_id: config.connection, from: config.from, to,
-        from_display_name: (record.tracking || /\b(aether|ae7h3r|ether technologies|aether technologies)\b/i.test(reason)) ? 'AETHER Technologies' : 'JAD Associates', command_id: command(record, 'pstn'),
+      const call = await api('/calls', { connection_id: config.connection, from, to,
+        from_display_name: record.tracking ? record.businessName : /\b(aether|ae7h3r|ether technologies|aether technologies)\b/i.test(reason) ? 'AETHER Technologies' : 'JAD Associates', command_id: command(record, 'pstn'),
         client_state: clientState(record, 'pstn'), webhook_url: config.webhook, webhook_url_method: 'POST',
         timeout_secs: 30, time_limit_secs: 600, retry_on_timeout: false });
       record.pstnId ||= call.call_control_id;
@@ -123,7 +132,7 @@ export function createOutbound({ env = process.env, request = fetch, log = () =>
         record.answeredAt ||= new Date().toISOString();
         record.sipRequested = true; record.status = 'connecting';
         try {
-          const call = await api('/calls', { connection_id: config.connection, from: config.from, to: config.sip,
+          const call = await api('/calls', { connection_id: config.connection, from: record.from, to: config.sip,
             command_id: command(record, 'sip'), client_state: clientState(record, 'sip'),
             webhook_url: config.webhook, webhook_url_method: 'POST',
             link_to: record.pstnId, bridge_on_answer: true, prevent_double_bridge: true,

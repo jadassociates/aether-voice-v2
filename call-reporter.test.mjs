@@ -17,3 +17,9 @@ test('authorization failures stop retries and leave a diagnostic',async()=>{
  const report=createCallReporter({key:'test',request:async()=>{count++;return {ok:false,status:401}},log:(...args)=>logs.push(args),pause:async()=>{}});
  await report({...record});assert.equal(count,1);assert.equal(logs[0][1],'outbound_tracking_delivery_failed');
 });
+
+test('Miguel lifecycle delivery identifies his tenant and source line',async()=>{
+ let payload;const report=createCallReporter({key:'test',request:async(url,opts)=>{payload=JSON.parse(opts.body);return {ok:true}},pause:async()=>{}});
+ await report({...record,workspaceId:'6af10aa99b47afc47c29c90f',from:'+17874224204'});
+ assert.equal(payload.client_account_id,'6af10aa99b47afc47c29c90f');assert.equal(payload.from,'+17874224204');
+});

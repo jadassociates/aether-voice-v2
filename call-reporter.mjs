@@ -5,7 +5,7 @@ export function createCallReporter({ key, request = fetch, log = () => {}, pause
     if (!record.tracking) return;
     const at = record.endedAt || new Date().toISOString();
     const payload = {
-      request_id:record.id, sequence:record.sequence, status:record.status,
+      request_id:record.id, client_account_id:record.workspaceId || "6af7af661a790b508ba68668", sequence:record.sequence, status:record.status,
       from:record.from,to:record.to,at,call_control_id:record.pstnId || "",
       answered_at:record.answeredAt || "",
       duration_seconds:record.answeredAt ? Math.max(0,Math.floor((Date.parse(at)-Date.parse(record.answeredAt))/1000)) : 0,
