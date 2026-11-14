@@ -95,3 +95,26 @@ test('forged webhook cannot dial or bridge', async () => {
   assert.equal((await service.webhook(JSON.stringify(event('forged', 'call.answered', 'pstn')), {})).code, 400);
   assert.equal(requests.length, 1);
 });
+
+test('tracked calls publish sequenced states and preserve caller excerpts at hangup',async()=>{
+ const updates=[]; const {service,requests}=fixture({onChange:r=>updates.push({sequence:r.sequence,status:r.status,tracking:r.tracking,to:r.to,callerTurns:[...r.callerTurns]})});
+ await service.start({...body,workspace_tracking:true});
+ await service.webhook(...signed(event('tracked-answer','call.answered','pstn')));
+ const context=service.resolveContext(requests[1].payload.custom_headers);
+ context.callerTurns.push('Prefiero que me llamen mañana.');
+ await service.webhook(...signed(event('tracked-bridge','call.bridged','sip','sip-1')));
+ await service.webhook(...signed(event('tracked-end','call.hangup','pstn')));
+ assert.deepEqual(updates.map(x=>x.status),['dialing','connecting','connected','ended']);
+ assert.deepEqual(updates.map(x=>x.sequence),[1,2,3,4]);
+ assert.equal(requests[0].payload.from_display_name,'AETHER Technologies');
+ assert.equal(updates[3].tracking,true);assert.equal(updates[3].to,body.to);
+ assert.deepEqual(updates[3].callerTurns,['Prefiero que me llamen mañana.']);
+});
+test('busy and no-answer come from a verified pre-answer hangup cause',async()=>{
+ for(const [cause,status] of [['user_busy','busy'],['no_answer','no_answer']]){
+ const updates=[];const {service}=fixture({onChange:r=>updates.push(r.status)});
+ await service.start({...body,workspace_tracking:true});
+ const ended=event('hangup-'+cause,'call.hangup','pstn');ended.data.payload.hangup_cause=cause;
+ await service.webhook(...signed(ended));assert.equal(updates.at(-1),status);
+ }
+});
