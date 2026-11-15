@@ -28,7 +28,7 @@ test('grant is scoped to tenant, user, call and short expiry',()=>{
  assert.equal(validatedCalendarGrant(g,'other',g.request_id,now),null);
 });
 test('email must be read aloud then explicitly affirmed; a correction invalidates consent',()=>{
- const r=record();assert(hasCalendarConsent(r,'jay@example.com'));assert(!hasCalendarConsent(r,'wrong@example.com'));
+ const r=record();assert(hasCalendarConsent(r,'jay@example.com'));r.calendarDialogue.push({role:'assistant',text:'Voy a guardar la cita.'});assert(hasCalendarConsent(r,'jay@example.com'));assert(!hasCalendarConsent(r,'wrong@example.com'));
  r.calendarDialogue.push({role:'user',text:'No, cambia el correo.'});assert(!hasCalendarConsent(r,'jay@example.com'));
  r.calendarDialogue.push({role:'user',text:'Sí'});assert(!hasCalendarConsent(r,'jay@example.com'));
 });
