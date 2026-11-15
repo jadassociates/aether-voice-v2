@@ -20,12 +20,13 @@ function interval(args,now){
 export function hasCalendarConsent(record,email){
  const turns=record.calendarDialogue||[];
  const normalize=value=>String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
- const last=turns.at(-1);
+ const lastUser=turns.findLastIndex(turn=>turn.role==='user');
+ const last=turns[lastUser];
  const yes=normalize(last?.text).trim();
  if(last?.role!=='user'||!/^(si|correcto|correcta|exacto|confirmo|confirmado|de acuerdo|adelante|yes|correct|that's correct|that is correct)\b/.test(yes)||/\b(no|pero|cambia|corrige|excepto|not|but)\b/.test(yes))return false;
  const compact=value=>normalize(value).replace(/\barroba\b/g,'@').replace(/\bpunto\b/g,'.').replace(/\bguion bajo\b/g,'_').replace(/\bguion\b/g,'-').replace(/\s+/g,'');
  const target=compact(email);
- for(let n=turns.length-2;n>=0;n--){
+ for(let n=lastUser-1;n>=0;n--){
   const t=turns[n];
   if(t.role==='user'&&/\b(no|cambia|corrige|arroba|punto|email|correo)\b|@/.test(normalize(t.text)))return false;
   if(t.role==='assistant'&&compact(t.text).includes(target))return true;
