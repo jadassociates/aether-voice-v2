@@ -1,3 +1,4 @@
+import {validatedCalendarGrant} from "./workspace-calendar.mjs";
 import crypto from 'node:crypto';
 
 export function verifyTelnyxWebhook(raw, headers, publicKey, now = Date.now()) {
@@ -86,6 +87,10 @@ export function createOutbound({ env = process.env, request = fetch, log = () =>
     if (records.size >= 1000) return { code: 503, body: { error: 'Outbound request ledger is full; operator review required' } };
     const token = crypto.createHmac('sha256', config.secret).update(`outbound:${id}`).digest('hex');
     const record = { id, fingerprint, token, name, reason, status: 'dialing', mediaReady: false, direction: 'outbound', to, from, workspaceId, businessName: profile?.businessName || '', tracking: body.workspace_tracking === true, callerTurns: [], sequence: 0 };
+    record.calendarConnection=validatedCalendarGrant(body.calendar_connection,workspaceId,id);
+    if(record.calendarConnection){
+      const expiry=setTimeout(()=>{record.calendarConnection=null;},Math.max(0,Date.parse(record.calendarConnection.expires_at)-Date.now()));expiry.unref?.();record.calendarExpiry=expiry;
+    }
     records.set(id, record); byToken.set(token, record);
     try {
       const call = await api('/calls', { connection_id: config.connection, from, to,
@@ -151,7 +156,7 @@ export function createOutbound({ env = process.env, request = fetch, log = () =>
         record.endedAt = new Date().toISOString(); record.mediaReady = false;
         byToken.delete(record.token); onEnd(record);
         await hangup(record, state.leg === 'pstn' ? record.sipId : record.pstnId);
-        record.name = ''; record.reason = '';
+        record.name = ''; record.reason = ''; record.calendarConnection=null;clearTimeout(record.calendarExpiry);
       }
       changed(record);
       seen.add(data.id);
@@ -164,3 +169,4 @@ export function createOutbound({ env = process.env, request = fetch, log = () =>
   }
   return { start, webhook, resolveContext, readiness };
 }
+

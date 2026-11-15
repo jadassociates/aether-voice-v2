@@ -10,6 +10,7 @@ export function createCallReporter({ key, request = fetch, log = () => {}, pause
       answered_at:record.answeredAt || "",
       duration_seconds:record.answeredAt ? Math.max(0,Math.floor((Date.parse(at)-Date.parse(record.answeredAt))/1000)) : 0,
       caller_turns:(record.callerTurns || []).slice(-3).map(x=>String(x).slice(0,400)),
+      calendar_result:record.calendarResult || null,
       responder_type:record.responderType === "machine" ? "machine" : "unknown"
     };
     const task = (queues.get(record.id) || Promise.resolve()).catch(()=>{}).then(async()=>{
@@ -28,3 +29,4 @@ export function createCallReporter({ key, request = fetch, log = () => {}, pause
     return task;
   };
 }
+
