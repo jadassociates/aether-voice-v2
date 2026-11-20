@@ -168,6 +168,13 @@ function requiredConfig() {
 const MIGUEL_TRANSFER_NUMBER = "+17876348790";
 const MIGUEL_TRANSFER_ENABLED = process.env.AETHER_MIGUEL_TRANSFER_ENABLED === "true";
 
+const endCallTool = {
+  type: "function",
+  name: "end_call",
+  description: "End the phone call after a brief farewell when the caller explicitly ends the conversation or the conversation is complete.",
+  parameters: { type: "object", properties: {} }
+};
+
 const tools = [
   {
     type: "function", name: "transfer_to_miguel",
@@ -342,7 +349,8 @@ async function handleFunctionCall(state, item) {
     return;
   }
 
-  if (name === "end_call" && state.context) {
+  if (name === "end_call" && (state.context || !state.tenant)) {
+    log("info", "call_hangup_requested", { session: state.callId });
     try {
       if (!await waitForPlayout(state)) {
         if (state.closed) return;
@@ -356,8 +364,10 @@ async function handleFunctionCall(state, item) {
       // A late hangup can race with the provider closing the call naturally.
       // Treat an already-ended call as complete; never restart the dialogue.
       if (!response.ok && ![404, 409, 410].includes(response.status)) throw new Error(`Hangup rejected (${response.status})`);
+      log("info", "call_hangup_completed", { session: state.callId, status: response.status });
       detach(state.callId);
-    } catch {
+    } catch (error) {
+      log("warn", "call_hangup_failed", { session: state.callId, error: String(error.message || error) });
       state.pendingToolOutput = { toolCallId, output: { success: false, error: "Could not end call" } };
       state.toolRunning = false;
       flushPendingToolOutput(state);
@@ -443,7 +453,7 @@ function callInstructions(context, tenant) {
     "Confirma una cita solamente cuando la herramienta de reserva indique éxito. Si una herramienta falla, informa que no pudiste completar la gestión. Nunca uses ni menciones la agenda de otro negocio.",
     /miguel\s+santiago|asegurarte/i.test(tenant.businessName) ? "Si el cliente solicita hablar con Miguel Santiago, di «Con mucho gusto, le comunico con Miguel. Un momento, por favor» y utiliza transfer_to_miguel. Si falla, ofrece tomar un mensaje. No afirmes que Miguel contestó hasta verificarlo." : "",
   ].join(" ");
-  if (!context) return DEMO_INSTRUCTIONS + " Evita repetir la presentación durante la llamada.";
+  if (!context) return DEMO_INSTRUCTIONS + " Evita repetir la presentación. Ante una despedida o un cierre claro, despídete una sola vez en una frase breve y solicita end_call en la misma respuesta, después de la despedida. No esperes otro turno ni vuelvas a preguntar si necesita algo. Si aún está haciendo una solicitud, atiéndela.";
 
   if (isAetherCampaignContext(context)) {
     return AETHER_OUTBOUND_INSTRUCTIONS +
@@ -536,7 +546,7 @@ function attach(callId, context = null, tenant = null) {
           token_limits: { post_instructions: 3000 }
         },
         instructions: callInstructions(context, tenant),
-        tools: context ? [...(context.tracking ? (context.calendarConnection ? tools.filter(tool=>["get_calendar_availability","book_calendar_appointment"].includes(tool.name)) : []) : tools.filter(tool => tool.name !== "transfer_to_miguel")), { type: "function", name: "end_call", description: "End this outbound call when the person asks to stop or the conversation is complete.", parameters: { type: "object", properties: {} } }] : (tenant && /miguel\s+santiago|asegurarte/i.test(tenant.businessName) ? tools : tools.filter(tool => tool.name !== "transfer_to_miguel")),
+        tools: context ? [...(context.tracking ? (context.calendarConnection ? tools.filter(tool=>["get_calendar_availability","book_calendar_appointment"].includes(tool.name)) : []) : tools.filter(tool => tool.name !== "transfer_to_miguel")), endCallTool] : (tenant && /miguel\s+santiago|asegurarte/i.test(tenant.businessName) ? tools : [...tools.filter(tool => tool.name !== "transfer_to_miguel"), ...(!tenant ? [endCallTool] : [])]),
         tool_choice: "auto",
         audio: {
           output: { voice: AETHER_REALTIME_VOICE },
